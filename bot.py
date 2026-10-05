@@ -7,7 +7,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (BufferedInputFile, CallbackQuery, InlineKeyboardButton,
-                           InlineKeyboardMarkup, Message)
+                           InlineKeyboardMarkup, Message, ChatMemberUpdated)
 
 HERE = Path(__file__).parent
 
@@ -82,6 +82,27 @@ async def give(target: Message, uid: int):
     db.commit()
     await target.answer(S["lesson_done"], reply_markup=kb([
         [InlineKeyboardButton(text=B["channel"], url=CHANNEL_LINK)]]))
+
+
+@dp.chat_member()
+async def on_channel_member(ev: ChatMemberUpdated, bot: Bot):
+    if str(ev.chat.id) != str(CHANNEL_ID) and f"@{ev.chat.username}".lower() != str(CHANNEL_ID).lower():
+        return
+    if ev.old_chat_member.status not in ("left", "kicked") or ev.new_chat_member.status != "member":
+        return
+    uid = ev.new_chat_member.user.id
+    if not db.execute("SELECT 1 FROM users WHERE id=?", (uid,)).fetchone():
+        return
+    try:
+        await bot.send_message(uid, S["lesson_done"], reply_markup=kb([
+            [InlineKeyboardButton(text=B["channel"], url=CHANNEL_LINK)]]))
+        db.execute("UPDATE users SET lessons='получила доступ' WHERE id=?", (uid,))
+        db.commit()
+    except TelegramForbiddenError:
+        db.execute("UPDATE users SET blocked=1 WHERE id=?", (uid,))
+        db.commit()
+    except Exception as e:
+        print(f"[chat_member] не удалось написать {uid}: {e!r}", flush=True)
 
 
 @dp.callback_query(F.data == "get")
@@ -439,7 +460,7 @@ async def export(m: Message):
 async def main():
     bot = Bot(TOKEN)
     spawn(scheduler(bot))
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, allowed_updates=["message", "callback_query", "chat_member"])
 
 
 if __name__ == "__main__":
