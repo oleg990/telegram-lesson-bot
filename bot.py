@@ -198,7 +198,22 @@ def admin_menu():
         [InlineKeyboardButton(text="📣 Сделать рассылку", callback_data="a:send")],
         [InlineKeyboardButton(text="📅 Запланированные рассылки", callback_data="a:sched")],
         [InlineKeyboardButton(text="📥 Скачать базу (таблица)", callback_data="a:export")],
+        [InlineKeyboardButton(text="⚙️ Редактировать тексты", callback_data="a:settings")],
         [InlineKeyboardButton(text="🔗 Ссылки на бота", callback_data="a:links")]])
+
+
+def settings_menu():
+    return kb([
+        [InlineKeyboardButton(text="📝 Приветствие", callback_data="t:welcome")],
+        [InlineKeyboardButton(text="📌 Нужна подписка", callback_data="t:subscribe_needed")],
+        [InlineKeyboardButton(text="❌ Нет подписки", callback_data="t:not_subscribed")],
+        [InlineKeyboardButton(text="✅ Готово (доступ открыт)", callback_data="t:lesson_done")],
+        [InlineKeyboardButton(text="🔘 Кнопка: Забрать уроки", callback_data="t:btn_get")],
+        [InlineKeyboardButton(text="🔘 Кнопка: Перейти в канал", callback_data="t:btn_channel")],
+        [InlineKeyboardButton(text="🔘 Кнопка: Подписаться", callback_data="t:btn_subscribe")],
+        [InlineKeyboardButton(text="🔘 Кнопка: Я подписалась", callback_data="t:btn_checked")],
+        cancel_row()
+    ])
 
 
 def cancel_row():
@@ -229,6 +244,12 @@ async def do_export(target: Message):
     for r in db.execute("SELECT id,username,name,source,joined,lessons,blocked FROM users"):
         w.writerow(r)
     await target.answer_document(BufferedInputFile(out.getvalue().encode("utf-8-sig"), "baza.csv"))
+
+
+def save_settings():
+    """Сохраняет S в settings.json"""
+    settings_file = HERE / "settings.json"
+    settings_file.write_text(json.dumps(S, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 async def run_broadcast(bot: Bot, bid: int):
@@ -310,6 +331,42 @@ async def show_confirm(m: Message, bot: Bot, st: dict):
 
 def is_admin_cb(c: CallbackQuery):
     return bool(ADMIN_ID) and c.from_user.id == ADMIN_ID
+
+
+@dp.callback_query(F.data == "a:settings")
+async def settings_cmd(c: CallbackQuery):
+    if not is_admin_cb(c):
+        await c.answer()
+        return
+    pending.pop(c.from_user.id, None)
+    await c.message.answer("Какой текст менять?", reply_markup=settings_menu())
+    await c.answer()
+
+
+@dp.callback_query(F.data.startswith("t:"))
+async def choose_text(c: CallbackQuery):
+    if not is_admin_cb(c):
+        await c.answer()
+        return
+    key = c.data[2:]  # "t:welcome" → "welcome"
+    st = pending.setdefault(c.from_user.id, {})
+    st["step"] = "input_text"
+    st["text_key"] = key
+
+    # Показываем текущее значение
+    if key.startswith("btn_"):
+        btn_key = key[4:]  # "btn_get" → "get"
+        current = S["buttons"].get(btn_key, "")
+        title = f"Кнопка: {S['buttons'].get(btn_key, '')}"
+    else:
+        current = S.get(key, "")
+        title = key
+
+    await c.message.answer(
+        f"Текущее значение для «{title}»:\n\n{current}\n\n" +
+        f"Пришлите новый текст или нажмите «Отмена».",
+        reply_markup=kb([cancel_row()]))
+    await c.answer()
 
 
 @dp.callback_query(F.data.startswith("a:"))
@@ -424,6 +481,28 @@ async def choose_when(c: CallbackQuery, bot: Bot):
 async def catch_admin_input(m: Message, bot: Bot):
     st = pending.get(m.from_user.id) if admin(m) else None
     if not st:
+        return
+    if st["step"] == "input_text":
+        key = st["text_key"]
+        new_text = m.text.strip()
+
+        # Сохраняем в S
+        if key.startswith("btn_"):
+            btn_key = key[4:]
+            S["buttons"][btn_key] = new_text
+            title = f"Кнопка: {key[4:]}"
+        else:
+            S[key] = new_text
+            title = key
+
+        # Пишем в файл
+        try:
+            save_settings()
+            await m.answer(f"✅ Сохранено: «{title}».", reply_markup=admin_menu())
+            pending.pop(m.from_user.id, None)
+        except Exception as e:
+            await m.answer(f"❌ Ошибка сохранения: {e!r}", reply_markup=admin_menu())
+            pending.pop(m.from_user.id, None)
         return
     if st["step"] == "wait":
         st.update(step="aud", chat=m.chat.id, msg=m.message_id)
